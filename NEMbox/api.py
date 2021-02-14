@@ -278,7 +278,7 @@ class NetEase(object):
             "Content-Type": "application/x-www-form-urlencoded",
             "Host": "music.163.com",
             "Referer": "http://music.163.com",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_1_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.87 Safari/537.36",
         }
 
         self.storage = Storage()
@@ -343,7 +343,7 @@ class NetEase(object):
             discard=False,
             comment=None,
             comment_url=None,
-            rest=None,
+            rest={},
         )
 
     def request(self, method, path, params={}, default={"code": -1}, custom_cookies={}):
@@ -376,21 +376,20 @@ class NetEase(object):
         self.session.cookies.load()
         if username.isdigit():
             path = "/weapi/login/cellphone"
-            params = dict(phone=username, password=password, countrycode="86", rememberLogin="true")
-        else:
-            # magic token for login
-            # see https://github.com/Binaryify/NeteaseCloudMusicApi/blob/master/router/login.js#L15
-            client_token = (
-                "1_jVUMqWEPke0/1/Vu56xCmJpo5vP1grjn_SOVVDzOc78w8OKLVZ2JH7IfkjSXqgfmh"
+            params = dict(
+                phone=username,
+                password=password,
+                countrycode="86",
+                rememberLogin="true",
             )
+        else:
             path = "/weapi/login"
             params = dict(
                 username=username,
                 password=password,
                 rememberLogin="true",
-                clientToken=client_token,
             )
-        data = self.request("POST", path, params)
+        data = self.request("POST", path, params, custom_cookies={"os": "pc"})
         self.session.cookies.save()
         return data
 
@@ -403,7 +402,7 @@ class NetEase(object):
     # 用户歌单
     def user_playlist(self, uid, offset=0, limit=50):
         path = "/weapi/user/playlist"
-        params = dict(uid=uid, offset=offset, limit=limit, csrf_token="")
+        params = dict(uid=uid, offset=offset, limit=limit)
         return self.request("POST", path, params).get("playlist", [])
 
     # 每日推荐歌单
@@ -413,8 +412,8 @@ class NetEase(object):
 
     # 每日推荐歌曲
     def recommend_playlist(self, total=True, offset=0, limit=20):
-        path = "/weapi/v1/discovery/recommend/songs"  # NOQA
-        params = dict(total=total, offset=offset, limit=limit, csrf_token="")
+        path = "/weapi/v1/discovery/recommend/songs"
+        params = dict(total=total, offset=offset, limit=limit)
         return self.request("POST", path, params).get("recommend", [])
 
     # 私人FM
@@ -461,7 +460,7 @@ class NetEase(object):
         return self.request("POST", path)
 
     # 歌单详情
-    def playlist_detail(self, playlist_id):
+    def playlist_songlist(self, playlist_id):
         path = "/weapi/v3/playlist/detail"
         params = dict(id=playlist_id, total="true", limit=1000, n=1000, offest=0)
         # cookie添加os字段
@@ -469,7 +468,7 @@ class NetEase(object):
         return (
             self.request("POST", path, params, {"code": -1}, custom_cookies)
             .get("playlist", {})
-            .get("tracks", [])
+            .get("trackIds", [])
         )
 
     # 热门歌手 http://music.163.com/#/discover/artist/
@@ -481,7 +480,7 @@ class NetEase(object):
     # 热门单曲 http://music.163.com/discover/toplist?id=
     def top_songlist(self, idx=0, offset=0, limit=100):
         playlist_id = TOP_LIST_ALL[idx][1]
-        return self.playlist_detail(playlist_id)
+        return self.playlist_songlist(playlist_id)
 
     # 歌手单曲
     def artists(self, artist_id):
@@ -562,7 +561,13 @@ class NetEase(object):
         if not data:
             return []
         if dig_type == "songs" or dig_type == "fmsongs":
-            urls = self.songs_url([s["id"] for s in data])
+            sids = [x["id"] for x in data]
+            urls = self.songs_url(sids)
+            i = 0
+            sds = []
+            while i < len(sids):
+                sds.extend(self.songs_detail(sids[i : i + 500]))
+                i += 500
             timestamp = time.time()
             # api 返回的 urls 的 id 顺序和 data 的 id 顺序不一致
             # 为了获取到对应 id 的 url，对返回的 urls 做一个 id2index 的缓存
@@ -570,7 +575,7 @@ class NetEase(object):
             url_id_index = {}
             for index, url in enumerate(urls):
                 url_id_index[url["id"]] = index
-            for s in data:
+            for s in sds:
                 url_index = url_id_index.get(s["id"])
                 if url_index is None:
                     log.error("can't get song url, id: %s", s["id"])
@@ -579,7 +584,7 @@ class NetEase(object):
                 s["br"] = urls[url_index]["br"]
                 s["expires"] = urls[url_index]["expi"]
                 s["get_time"] = timestamp
-            return Parse.songs(data)
+            return Parse.songs(sds)
 
         elif dig_type == "refresh_urls":
             urls_info = self.songs_url(data)
